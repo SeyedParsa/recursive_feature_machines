@@ -37,6 +37,7 @@ class RecursiveFeatureMachine(torch.nn.Module):
             y.append(labels)
         return torch.cat(X, dim=0), torch.cat(y, dim=0)
 
+
     def update_M(self):
         raise NotImplementedError("Must implement this method in a subclass")
 
@@ -50,6 +51,8 @@ class RecursiveFeatureMachine(torch.nn.Module):
                 self.M = torch.eye(centers.shape[-1], device=self.device)
         if self.fit_using_eigenpro and EIGENPRO_AVAILABLE:
             self.weights = self.fit_predictor_eigenpro(centers, targets, **kwargs)
+        elif self.fit_nadaraya_watson:
+            self.weights = targets
         else:
             self.weights = self.fit_predictor_lstsq(centers, targets)
 
@@ -70,7 +73,21 @@ class RecursiveFeatureMachine(torch.nn.Module):
 
 
     def predict(self, samples):
-        return self.kernel(samples, self.centers) @ self.weights
+        kernel = self.kernel(samples, self.centers)
+        if self.fit_nadaraya_watson:
+            # rowsum = kernel.sum(dim=1, keepdim=True)
+            kernel /= kernel.sum(dim=1, keepdim=True)
+            # nans = torch.sum(torch.isnan(kernel)).item()
+            # if nans > 0:
+                # wherezero = torch.isclose(rowsum, torch.tensor(0.0, device=rowsum.device))
+                # print(nans/kernel.shape[-1], torch.sum(wherezero))
+                # print(rowsum[wherezero])
+                # torch.save([samples, self.centers, self.M], '/projects/bbjr/pmirtaheri/RFM/arrays/bug.pt')
+                # print(self.bandwidth)
+
+        preds = kernel @ self.weights
+        preds[torch.isnan(preds)] = 0.0
+        return preds
 
 
     def fit(self, train_loader, test_loader,
@@ -81,7 +98,7 @@ class RecursiveFeatureMachine(torch.nn.Module):
         #         "EigenPro method is not yet supported. "+
         #         "Please try again with `method='lstlq'`")
         self.fit_using_eigenpro = (method.lower()=='eigenpro')
-            # self.fit_using_eigenpro = True
+        self.fit_nadaraya_watson = (method.lower()=='nw')
         
         if loader:
             print("Loaders provided")
@@ -91,8 +108,9 @@ class RecursiveFeatureMachine(torch.nn.Module):
             X_train, y_train = train_loader
             X_test, y_test = test_loader
 
-        
-            
+     
+        agops = []
+        test_mses = []
         for i in range(iters):
             self.fit_predictor(X_train, y_train, **kwargs)
             
@@ -105,8 +123,10 @@ class RecursiveFeatureMachine(torch.nn.Module):
 
             test_mse = self.score(X_test, y_test, metric='mse')
             print(f"Round {i}, Test MSE: {test_mse:.4f}")
+            test_mses.append(test_mse.cpu().numpy())
             
             self.fit_M(X_train, y_train, **kwargs)
+            agops.append(self.M.cpu().numpy())
 
             if name is not None:
                 hickle.dump(self.M, f"saved_Ms/M_{name}_{i}.h")
@@ -118,8 +138,10 @@ class RecursiveFeatureMachine(torch.nn.Module):
             final_test_acc = self.score(X_test, y_test, metric='accuracy')
             print(f"Final Test Acc: {final_test_acc:.2f}%")
             
-        return final_mse
+        return agops, test_mses
+        # return final_mse
     
+
     def _compute_optimal_M_batch(self, p, c, d, scalar_size=4):
         """Computes the optimal batch size for EGOP."""
         THREADS_PER_BLOCK = 512 # pytorch default
@@ -138,6 +160,7 @@ class RecursiveFeatureMachine(torch.nn.Module):
         M_batch_size = max_tensor_size((mem_available - 3*tensor_mem_usage(p) - tensor_mem_usage(p*c*d)) / (2*scalar_size*(1+p)))
         return M_batch_size
     
+
     def fit_M(self, samples, labels, M_batch_size=None, **kwargs):
         """Applies EGOP to update the Mahalanobis matrix M."""
         
@@ -162,6 +185,7 @@ class RecursiveFeatureMachine(torch.nn.Module):
 
         if self.centering:
             self.M = self.M - self.M.mean(0)
+
 
     def score(self, samples, targets, metric='mse'):
         preds = self.predict(samples)
@@ -241,6 +265,7 @@ class LaplaceRFM(RecursiveFeatureMachine):
         else:
             return torch.einsum("ncd, ncD -> dD", G, G)
 
+
 class GaussRFM(RecursiveFeatureMachine):
 
     def __init__(self, bandwidth=1., **kwargs):
@@ -291,6 +316,8 @@ class GaussRFM(RecursiveFeatureMachine):
             self.M = torch.einsum('ncd, ncd -> d', G, G)/len(samples)
         else:
             self.M = torch.einsum('ncd, ncD -> dD', G, G)/len(samples)
+#            self.M += torch.eye(self.M.shape[-1], device=self.device)*1e-6
+
 
 if __name__ == "__main__":
     torch.set_default_dtype(torch.float32)
