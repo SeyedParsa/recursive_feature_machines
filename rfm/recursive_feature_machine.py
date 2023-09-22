@@ -12,7 +12,7 @@ except ModuleNotFoundError:
     
 import torch, numpy as np
 from torchmetrics.functional.classification import accuracy
-from kernels import laplacian_M, gaussian_M, euclidean_distances_M
+from .kernels import laplacian_M, gaussian_M, euclidean_distances_M
 from tqdm.contrib import tenumerate
 import hickle
 
@@ -183,10 +183,7 @@ class RecursiveFeatureMachine(torch.nn.Module):
         self.M = M / n
         del M
 
-        if self.centering:
-            self.M = self.M - self.M.mean(0)
-
-
+    
     def score(self, samples, targets, metric='mse'):
         preds = self.predict(samples)
         if metric=='accuracy':
@@ -259,6 +256,9 @@ class LaplaceRFM(RecursiveFeatureMachine):
 
         del centers_term, samples_term, K
         
+        if self.centering:
+            G = G - G.mean(0) # (n, c, d)
+        
         # return quantity to be added to M. Division by len(samples) will be done in parent function.
         if self.diag:
             return torch.einsum('ncd, ncd -> d', G, G)
@@ -313,10 +313,9 @@ class GaussRFM(RecursiveFeatureMachine):
             G = G - G.mean(0) # (n, c, d)
         
         if self.diag:
-            self.M = torch.einsum('ncd, ncd -> d', G, G)/len(samples)
+            return torch.einsum('ncd, ncd -> d', G, G)
         else:
-            self.M = torch.einsum('ncd, ncD -> dD', G, G)/len(samples)
-#            self.M += torch.eye(self.M.shape[-1], device=self.device)*1e-6
+            return torch.einsum("ncd, ncD -> dD", G, G)
 
 
 if __name__ == "__main__":
