@@ -174,6 +174,7 @@ class RecursiveFeatureMachine(torch.nn.Module):
             M.add_(self.update_M(samples[bids]))
 
         self.M = M / n
+        self.M /= torch.diag(self.M).mean()
         del M
 
     def score(self, samples, targets, metric='mse'):
